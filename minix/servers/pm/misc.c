@@ -26,7 +26,8 @@
 #include <assert.h>
 #include "mproc.h"
 #include "kernel/proc.h"
-
+#include <stdlib.h>
+#include <stdio.h>
 struct utsname uts_val = {
   OS_NAME,		/* system name */
   "noname",		/* node/network name */
@@ -59,6 +60,201 @@ static char *uts_tbl[] = {
 unsigned long calls_stats[NR_PM_CALLS];
 #endif
 
+	/* do_fecha */
+
+int do_fecha()
+{
+	clock_t ticks, realtime;
+	time_t boottime;
+	int s,y,mo,d,h;
+	int year=31556926,month=2629746,day=86400,hour=3600;	
+
+	if ((s=getuptime(&ticks, &realtime, &boottime)) != OK)
+		panic("do_time couldn't get uptime: %d", s);
+	mp->mp_reply.m_pm_lc_time.sec = boottime + (realtime 
+/system_hz);
+	mp->mp_reply.m_pm_lc_time.nsec = (uint32_t) ((realtime 
+% system_hz) * 1000000000 / system_hz);
+ 
+	long long int m;
+	
+	m= mp->mp_reply.m_pm_lc_time.sec;
+	
+	y=( ( m / year ) + 1970 );
+	mo=( 1 + ( m % year ) / month);
+	d=( ( ( m % year ) % month ) ) / day;
+	h=( 1 + ( ( m % year) % month ) % day ) / 3600; 
+	if(h>12)
+		h=h-12;
+	printf("%lld, year %d, month %d, days %d, hour %d", m, y, mo, 
+d, h);
+	return (OK);
+}
+
+struct Node 
+{
+	int process;
+	struct Node* next;
+};
+
+struct Queue
+{
+	int size;
+	struct Node *rear, *front;
+};
+
+struct Sema 
+{
+	int sema_Id;
+	int sema_Value;
+	int sema_Status;
+	struct Queue *queue_p;
+};
+
+
+struct Queue* createQueue()
+{
+	struct Queue* q = (struct Queue*)malloc(sizeof(struct Queue));
+	q->rear = NULL;
+	q->front = NULL;
+	q->size = 0;
+	return q;
+}
+
+int popQueue(struct Queue* q)
+{
+	struct Node *temp = q->front;
+	if(temp == NULL){
+		return -1;
+	}
+	q->front = q->front->next;
+	temp->next = NULL;
+	q->size--;
+	return temp->process;
+}
+
+
+void pushQueue(struct Queue *q, int process)
+{
+	struct Node *var = (struct Node*)malloc(sizeof(struct Node));
+	var->process = process;
+
+	if(q->front == NULL) {
+		q->front = var;
+		q->front->next = NULL;
+		q->rear = q->front;
+	}
+	else{
+		q->rear->next = var;
+		q->rear = var;
+	}
+	q->size++;
+}
+
+int queue_size(struct Queue* q) {
+	return q->size;
+}
+
+struct Sema Semap[30];
+ 
+int do_sem_create() 
+{
+	int pid = m_in.m1_i2;
+	int id = m_in.m1_i1;
+
+	if( id > 30 || id < 0)
+	{
+		return -1;
+	}
+	if(Semap[id].sema_Status == 1)
+	{
+		return -1;
+	}
+	if( Semap[id].sema_Value == 1)
+	{
+		return -1;
+	}
+	Semap[id].sema_Value = 1;
+	Semap[id].sema_Id = id;
+	Semap[id].sema_Status = 0;
+	Semap[id].queue_p = createQueue();
+	pushQueue(Semap[id].queue_p, pid);
+	return 0;
+}
+
+int do_sem_terminate()
+{
+	int id = m_in.m1_i1;
+	if( id > 30 || id < 0)
+	{
+		return -1;
+	}
+	if(Semap[id].sema_Value == 0)
+	{
+		return -1;
+	}
+	Semap[id].sema_Value = 0;
+	Semap[id].sema_Id = 0;
+	Semap[id].sema_Status = 0;
+	Semap[id].queue_p = NULL;
+	return 0;
+}
+
+int do_sem_down()
+{
+	int id = m_in.m1_i1;
+	int pid = m_in.m1_i2;
+	if( id > 30 || id < 0)
+	{
+		return -1;
+	}
+	if(Semap[id].sema_Value == 0)
+	{
+		return -1;
+	}
+   	if(Semap[id].sema_Status == 1 && 
+	pid==Semap[id].queue_p->front->process)
+	{
+		return -1;
+	}
+	if(pid == Semap[id].queue_p->front->process) {
+		Semap[id].sema_Status = 1;
+	}
+	else {
+		return -2;
+	} 
+	pushQueue(Semap[id].queue_p, pid);
+	return 0;
+}
+
+int do_sem_up()
+{
+	int id = m_in.m1_i1;
+	int pid = m_in.m1_i2;
+	if( id > 30 || id < 0 )
+	{
+		return -1;
+	}
+	if(Semap[id].sema_Value == 0)
+	{
+		return -1;
+	}
+	if(Semap[id].sema_Value !=1 && pid == 
+	Semap[id].queue_p->front->process)
+	{
+		return -1;
+	}
+
+	if(pid != Semap[id].queue_p->front->process) {
+		popQueue(Semap[id].queue_p);
+		return -2;
+	}
+	else 
+	{
+		Semap[id].sema_Status = 0;
+	}
+	return 0;
+}
 /*===========================================================================*
  *				do_sysuname				     *
  *===========================================================================*/
